@@ -635,6 +635,7 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
             case Opcodes.INVOKEVIRTUAL:
             case Opcodes.INVOKESPECIAL:
             case Opcodes.INVOKEINTERFACE:
+                //todo 1 构造污染参数集合，方法调用前先把操作数入栈
                 final List<Set<T>> argTaint = new ArrayList<Set<T>>(argTypes.length);
                 for (int i = 0; i < argTypes.length; i++) {
                     argTaint.add(null);
@@ -650,8 +651,10 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                     }
                 }
 
+                //todo 2 构造方法的调用，意味参数0可以污染返回值
                 Set<T> resultTaint;
                 if (name.equals("<init>")) {
+                    //如果被调用的方法是构造方法，则直接通过对象污染
                     // Pass result taint through to original taint set; the initialized object is directly tainted by
                     // parameters
                     resultTaint = argTaint.get(0);
@@ -659,11 +662,14 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                     resultTaint = new HashSet<>();
                 }
 
+                //污染例外关联，不通过参数关联
                 // If calling defaultReadObject on a tainted ObjectInputStream, that taint passes to "this"
                 if (owner.equals("java/io/ObjectInputStream") && name.equals("defaultReadObject") && desc.equals("()V")) {
                     savedVariableState.localVars.get(0).addAll(argTaint.get(0));
                 }
 
+                //todo 3 在名单内的方法的调用，已预置哪个参数可以污染返回值
+                //例外，污染白名单，固定哪个参数可以污染下去
                 for (Object[] passthrough : PASSTHROUGH_DATAFLOW) {
                     if (passthrough[0].equals(owner) && passthrough[1].equals(name) && passthrough[2].equals(desc)) {
                         for (int i = 3; i < passthrough.length; i++) {
@@ -672,6 +678,8 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                     }
                 }
 
+                //todo 4 前面已做逆拓扑，调用链最末端最先被visit，因此，调用到的方法必然已被visit分析过
+                //通过PassthroughDiscovery发现的参数和返回值污染
                 if (passthroughDataflow != null) {
                     Set<Integer> passthroughArgs = passthroughDataflow.get(methodHandle);
                     if (passthroughArgs != null) {
@@ -684,9 +692,11 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                 // Heuristic; if the object implements java.util.Collection or java.util.Map, assume any method accepting an object
                 // taints the collection. Assume that any method returning an object returns the taint of the collection.
                 if (opcode != Opcodes.INVOKESTATIC && argTypes[0].getSort() == Type.OBJECT) {
+                    //获取被调用函数的所有基类
                     Set<ClassReference.Handle> parents = inheritanceMap.getSuperClasses(new ClassReference.Handle(argTypes[0].getClassName().replace('.', '/')));
                     if (parents != null && (parents.contains(new ClassReference.Handle("java/util/Collection")) ||
                             parents.contains(new ClassReference.Handle("java/util/Map")))) {
+                        //如果该类为集合类，则存储的所有元素都是污染
                         for (int i = 1; i < argTaint.size(); i++) {
                             argTaint.get(0).addAll(argTaint.get(i));
                         }
@@ -698,7 +708,7 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                 }
 
                 if (retSize > 0) {
-                    push(resultTaint);
+                    push(resultTaint);//污染结果入栈
                     for (int i = 1; i < retSize; i++) {
                         push();
                     }
@@ -897,6 +907,7 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
     }
 
     protected Set<T> getStackTaint(int index) {
+        //出栈，index=0为栈顶
         return savedVariableState.stackVars.get(savedVariableState.stackVars.size()-1-index);
     }
     protected void setStackTaint(int index, T ... possibleValues) {
@@ -904,6 +915,7 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
         for (T value : possibleValues) {
             values.add(value);
         }
+        //入栈，index=0为栈顶
         savedVariableState.stackVars.set(savedVariableState.stackVars.size()-1-index, values);
     }
     protected void setStackTaint(int index, Collection<T> possibleValues) {
@@ -932,9 +944,12 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
         if (Boolean.TRUE.equals(serializableDecider.apply(clazz))) {
             return true;
         }
+        //获取clazz的所有子类
         Set<ClassReference.Handle> subClasses = inheritanceMap.getSubClasses(clazz);
         if (subClasses != null) {
+            //遍历clazz所有子类是否存在可被序列化的class
             for (ClassReference.Handle subClass : subClasses) {
+                //使用各类型的serializableDecider中的apply方法判断class是否可序列化
                 if (Boolean.TRUE.equals(serializableDecider.apply(subClass))) {
                     return true;
                 }
